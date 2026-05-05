@@ -91,21 +91,25 @@ export class ParticleSystem {
 
   private createSakuraParticles() {
     const group = new THREE.Group();
-    const count = 100;
+    const count = 180; // More petals
     for (let i = 0; i < count; i++) {
-        const geo = new THREE.PlaneGeometry(0.1, 0.1);
+        const size = 0.08 + Math.random() * 0.06;
+        const geo = new THREE.PlaneGeometry(size, size * 1.4);
         const mat = new THREE.MeshStandardMaterial({
-            color: Math.random() > 0.5 ? 0xffb7c5 : 0xffffff,
+            color: Math.random() > 0.6 ? 0xff8fb1 : (Math.random() > 0.5 ? 0xffffff : 0xffd1dc),
             side: THREE.DoubleSide,
             transparent: true,
-            opacity: 0.8
+            opacity: 0.7,
+            emissive: 0xff8fb1,
+            emissiveIntensity: Math.random() * 0.5
         });
         const petal = new THREE.Mesh(geo, mat);
-        petal.position.set((Math.random() - 0.5) * 40, 10 + Math.random() * 10, (Math.random() - 0.5) * 30);
+        petal.position.set((Math.random() - 0.5) * 45, 12 + Math.random() * 12, (Math.random() - 0.5) * 35);
         petal.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-        petal.userData.rotVel = new THREE.Vector3((Math.random() - 0.5) * 0.05, (Math.random() - 0.5) * 0.05, Math.random() * 0.05);
-        petal.userData.fallVel = 0.02 + Math.random() * 0.03;
+        petal.userData.rotVel = new THREE.Vector3((Math.random() - 0.5) * 0.08, (Math.random() - 0.5) * 0.08, Math.random() * 0.1);
+        petal.userData.fallVel = 0.015 + Math.random() * 0.025; // Slower, more graceful fall
         petal.userData.swayOffset = Math.random() * Math.PI * 2;
+        petal.userData.swaySpeed = 0.5 + Math.random() * 0.5;
         group.add(petal);
     }
     this.particles = group;
@@ -321,7 +325,7 @@ export class ParticleSystem {
         if (child.userData.fallVel) { // Sakura / Autumn
           const mesh = child as THREE.Mesh;
           mesh.position.y -= mesh.userData.fallVel;
-          mesh.position.x += Math.sin(time + mesh.userData.swayOffset) * 0.03;
+          mesh.position.x += Math.sin(time * (mesh.userData.swaySpeed || 1.0) + mesh.userData.swayOffset) * 0.03;
           mesh.rotation.x += mesh.userData.rotVel.x;
           mesh.rotation.y += mesh.userData.rotVel.y;
           mesh.rotation.z += mesh.userData.rotVel.z;

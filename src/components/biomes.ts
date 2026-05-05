@@ -14,15 +14,15 @@ export interface BiomeConfig {
 export const BIOMES: Record<number, BiomeConfig> = {
   10: {
     key: 'sakura',
-    name: 'Hanami Sakura',
-    description: 'Delicate pink petals and dark cherry wood. A transient spring bloom.',
-    treeColor: 0x3d2b1f,
-    leafColor: 0xffb7c5,
-    lRule: 'F -> F[+F][-F]F',
+    name: 'Neo-Heian Sakura',
+    description: 'Bioluminescent cherry blossoms with intricate recursive branching. A synthesis of digital DNA and ancient flora.',
+    treeColor: 0x2c1e14,
+    leafColor: 0xff8fb1,
+    lRule: 'F -> F[+F][-F]F[+F]',
     lAxiom: 'F',
     maxIter: 2,
-    branchLimit: 15,
-    spread: 0.6
+    branchLimit: 22,
+    spread: 0.8
   },
   9: {
     key: 'monsoon',

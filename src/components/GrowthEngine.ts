@@ -30,7 +30,8 @@ export class GrowthEngine {
     this.groups.push(group);
 
     // Sample random points on the surface
-    const plantCount = config.branchLimit;
+    // Randomize plant count slightly around the branchLimit
+    const plantCount = Math.floor(config.branchLimit * (0.8 + Math.random() * 0.4));
     this.currentSpread = config.spread;
 
     for (let i = 0; i < plantCount; i++) {
@@ -49,6 +50,7 @@ export class GrowthEngine {
         const quaternion = new THREE.Quaternion().setFromUnitVectors(up, worldNorm);
         pivot.applyQuaternion(quaternion);
         
+        // Pass individual plant overrides
         const plant = this.createPlant(config);
         // Organic metadata for variations
         plant.userData.delay = Math.random() * 0.5; // Up to 0.5s stagger
@@ -67,13 +69,31 @@ export class GrowthEngine {
   createPlant(config: BiomeConfig) {
     const group = new THREE.Group();
     
+    // VARIATION: Randomize individual plant "DNA"
+    const localMaxIter = Math.max(1, config.maxIter + (Math.random() > 0.7 ? 1 : 0));
+    const localRuleBody = config.lRule.includes('->') ? config.lRule.split('->')[1].trim() : config.lRule;
+    
+    // Mutate the rule body per plant
+    let mutatedRule = localRuleBody;
+    const mutationChance = 0.3;
+    if (Math.random() < mutationChance) {
+        const mutations = [
+            (r: string) => r + "[+F" + "]",
+            (r: string) => r + "[-F" + "]",
+            (r: string) => r.replace('FF', 'F'),
+            (r: string) => r.replace(']', ']+F]'),
+            (r: string) => r + 'F'
+        ];
+        mutatedRule = mutations[Math.floor(Math.random() * mutations.length)](mutatedRule);
+    }
+
     // Simple L-System generation
     let sentence = config.lAxiom;
-    for (let i = 0; i < config.maxIter; i++) {
+    for (let i = 0; i < localMaxIter; i++) {
       let nextSentence = "";
       for (const char of sentence) {
         if (char === 'F') {
-          nextSentence += config.lRule;
+          nextSentence += mutatedRule;
         } else {
           nextSentence += char;
         }
@@ -81,8 +101,12 @@ export class GrowthEngine {
       sentence = nextSentence;
     }
 
-    const length = config.key === 'rainforest' ? 0.7 : 0.45;
-    const baseAngle = Math.PI / 5;
+    // Scale variation
+    const lengthBase = config.key === 'rainforest' ? 0.7 : 0.45;
+    const length = lengthBase * (0.8 + Math.random() * 0.6);
+    
+    // Angle variation (incorporating spread)
+    const baseAngle = (Math.PI / 5) * (0.5 + config.spread);
     const stack: { pos: THREE.Vector3, quat: THREE.Quaternion, thickness: number, depth: number }[] = [];
     
     let currentPos = new THREE.Vector3(0, -0.05, 0); // Sink slightly into surface
@@ -100,8 +124,10 @@ export class GrowthEngine {
         } else if (char === '[') {
             stack.push({ pos: new THREE.Vector3(), quat: new THREE.Quaternion(), thickness: 0, depth: tempDepth });
         } else if (char === ']') {
-            const s = stack.pop()!;
-            tempDepth = s.depth;
+            const s = stack.pop();
+            if (s) {
+              tempDepth = s.depth;
+            }
         }
     }
     stack.length = 0; // Clear stack
@@ -147,8 +173,10 @@ export class GrowthEngine {
         const nextPos = currentPos.clone().add(dir.multiplyScalar(randLen));
         
         // Create branch
+        // Branch Geometry with Biome Variation
+        let branchGeom: THREE.BufferGeometry;
         const segments = config.key === 'cyber' ? 4 : 8;
-        const branchGeom = new THREE.CylinderGeometry(currentThickness * 0.7, currentThickness, randLen, segments);
+        branchGeom = new THREE.CylinderGeometry(currentThickness * 0.7, currentThickness, randLen, segments);
         branchGeom.translate(0, randLen / 2, 0);
         
         const depthFactor = Math.min(1, depth / (maxDepth || 1));
@@ -243,6 +271,7 @@ export class GrowthEngine {
         branch.userData.depth = depth;
         branch.userData.isBranch = true;
         branch.userData.baseRot = branch.rotation.clone();
+        branch.userData.twistAmt = (Math.random() - 0.5) * Math.PI * 0.4; // Subtle twist variation
         group.add(branch);
 
         currentPos = nextPos;
@@ -260,7 +289,8 @@ export class GrowthEngine {
       } else if (char === '[') {
         stack.push({ pos: currentPos.clone(), quat: currentQuat.clone(), thickness: currentThickness, depth: depth });
       } else if (char === ']') {
-        const s = stack.pop()!;
+        const s = stack.pop();
+        if (!s) continue;
         
         // Add a "leaf" or "flower" at the end of a branch
         if (Math.random() > 0.3) {
@@ -274,14 +304,27 @@ export class GrowthEngine {
             finalLeafColor.lerp(new THREE.Color(0xffffff), colorVariation * 0.5);
 
             if (leafType === 'sakura') {
-                // Delicate petals
-                leafGeom = new THREE.SphereGeometry(0.08, 4, 4);
-                leafGeom.scale(1, 0.4, 0.8);
+                // Delicate biomic petals (Neo-Heian)
+                const petalPoints = [];
+                for (let i = 0; i <= 8; i++) {
+                  const t = i / 8;
+                  const angle = t * Math.PI;
+                  const r = Math.sin(angle) * (0.05 + Math.sin(t * Math.PI) * 0.05);
+                  petalPoints.push(new THREE.Vector2(r, t * 0.15));
+                }
+                leafGeom = new THREE.LatheGeometry(petalPoints, 8);
+                leafGeom.rotateX(Math.PI / 2);
+                leafGeom.scale(1, 0.2, 1);
+                
                 leafMat = new THREE.MeshPhysicalMaterial({ 
-                    color: Math.random() > 0.5 ? 0xffb7c5 : 0xffffff,
-                    roughness: 0.8,
-                    transmission: 0.2,
-                    thickness: 0.1
+                    color: Math.random() > 0.4 ? config.leafColor : 0xffffff,
+                    roughness: 0.2,
+                    transmission: 0.4,
+                    thickness: 0.1,
+                    emissive: config.leafColor,
+                    emissiveIntensity: 0.5,
+                    sheen: 1.0,
+                    sheenColor: 0xffffff
                 });
             } else if (leafType === 'monsoon') {
                 // Oversized broad leaves (Monstera-like)
@@ -401,6 +444,7 @@ export class GrowthEngine {
             leaf.userData.depth = depth + 1; // Leaves sprout after branch
             leaf.userData.isLeaf = true;
             leaf.userData.baseRot = leaf.rotation.clone();
+            leaf.userData.unfurlFactor = 1.0 + Math.random() * 0.5; // Variation in folding
             group.add(leaf);
         }
 
@@ -439,6 +483,8 @@ export class GrowthEngine {
         const distToMouse = mouse.distanceTo(new THREE.Vector2(projection.x, projection.y));
         const hoverInfluence = Math.max(0, 1.0 - distToMouse * 3.0); // Effective within closer range
         
+        plant.userData.hoverInfluence = hoverInfluence; // Store for external visual updates
+
         if (hoverInfluence > maxInfluence) {
           maxInfluence = hoverInfluence;
           bestHoverPos = plantWorldPos;
@@ -465,45 +511,80 @@ export class GrowthEngine {
           }
 
           if (this.isGrowing) {
-            // Smooth 'Back Out' easing for an organic organic spring/overshoot
-            const s = 2.0; // Overshoot intensity
+            // --- ORGANIC GROWTH EASING (Biomic Spring) ---
+            const overshoot = 1.35;
             let scale = 0;
             if (t > 0) {
               if (t < 1.0) {
-                const t1 = t - 1;
-                scale = t1 * t1 * ((s + 1) * t1 + s) + 1;
+                // Custom organic spring ease
+                scale = Math.pow(t, 2.5) * (overshoot - (overshoot - 1) * t);
               } else {
                 scale = 1.0;
               }
             }
             
-            // Prevent negative scale during the very start of the back-ease if any
+            // Prevent negative scale
             scale = Math.max(0, scale);
                 
-            child.scale.set(scale, scale, scale);
+            // ASYMMETRIC GROWTH (Unfurling effect)
+            if (child.userData.isLeaf) {
+              // Leaves grow along Y (length) first, then thicken
+              const lengthScale = scale;
+              const widthScale = Math.max(0, (t * 1.5 - 0.5) * 1.0); // More delayed width
+              const finalWidthScale = Math.min(scale, widthScale);
+              child.scale.set(finalWidthScale, lengthScale, finalWidthScale);
+            } else if (child.userData.isBranch) {
+              // Branches stretch then thicken
+              const heightScale = scale;
+              const thicknessScale = Math.min(scale, Math.max(0, (t * 1.2 - 0.2)));
+              child.scale.set(thicknessScale, heightScale, thicknessScale);
+            } else {
+              child.scale.set(scale, scale, scale);
+            }
           }
             
-          // Subtle idle wiggle for segments (independent of growth)
+          // --- HARMONIC SEGMENT SWAYING ---
           if ((child.userData.isBranch || child.userData.isLeaf) && child.userData.baseRot) {
-            const idleWiggleAmp = (child.userData.isLeaf ? 0.07 : 0.03) * (this.isGrowing ? 0.6 : 1.0);
-            const wiggleInfluence = 1.0 - hoverInfluence * 0.8; // Significantly more wiggle when not hovered
-            const wiggleSpeed = (child.userData.isLeaf ? 1.5 : 0.8) * (1.0 + Math.sin(swayOffset) * 0.1);
-            const wiggleAmt = idleWiggleAmp * wiggleInfluence;
+            const isLeaf = child.userData.isLeaf;
+            const windSpeed = 1.2 + Math.sin(swayOffset) * 0.2;
+            const windFreq = time * windSpeed;
+            
+            // Propagation: Higher segments swaying with a delay (phase shift)
+            const phase = segmentDepth * 0.4;
+            const swayAmtBase = (isLeaf ? 0.08 : 0.04) * (1.0 - hoverInfluence * 0.7) * (this.isGrowing ? 0.6 : 1.0);
+            
+            const swayX = Math.sin(windFreq + phase) * swayAmtBase;
+            const swayZ = Math.cos(windFreq * 0.8 + phase) * swayAmtBase;
             
             // Lively 'snap' effect during growth
             let snapX = 0;
-            if (this.isGrowing && t > 0.8 && t < 1.0) {
-              const snapIntensity = (t - 0.8) * 5.0; // 0 to 1
-              snapX = Math.sin(time * 15) * 0.02 * snapIntensity;
+            if (this.isGrowing && t > 0.85 && t < 1.0) {
+              snapX = Math.sin(time * 25.0) * 0.015 * (1.1 - t) * 10.0;
             }
 
-            // Combine base rotation with wiggles and snaps (multi-frequency for jitter-reduction)
-            const wiggleRotationZ = Math.sin(time * wiggleSpeed + segmentDepth) * 0.7 + Math.sin(time * wiggleSpeed * 1.5 + segmentDepth * 0.5) * 0.3;
-            const wiggleRotationX = Math.cos(time * wiggleSpeed * 0.8 + segmentDepth * 1.2) * 0.7 + Math.cos(time * wiggleSpeed * 1.3 + segmentDepth) * 0.3;
+            // Secondary Animations: Unfurling and Twisting
+            let unfurlRot = 0;
+            let twistRot = 0;
 
-            child.rotation.x = child.userData.baseRot.x + snapX + wiggleRotationX * (wiggleAmt * 0.4);
-            child.rotation.y = child.userData.baseRot.y;
-            child.rotation.z = child.userData.baseRot.z + wiggleRotationZ * wiggleAmt;
+            if (this.isGrowing) {
+              if (isLeaf) {
+                // Leaf unfurls from folded state
+                unfurlRot = (1.0 - t) * (child.userData.unfurlFactor || 1.2);
+              } else if (child.userData.isBranch) {
+                // Branch twists into its final orientation
+                twistRot = (1.0 - t) * (child.userData.twistAmt || 0);
+              }
+            }
+
+            child.rotation.x = child.userData.baseRot.x + snapX + swayX + unfurlRot;
+            child.rotation.y = child.userData.baseRot.y + twistRot;
+            child.rotation.z = child.userData.baseRot.z + swayZ;
+          }
+
+          // --- BREATHING EFFECT ---
+          if (!this.isGrowing && t >= 1.0) {
+            const breathing = 1.0 + Math.sin(time * 0.5 + swayOffset + segmentDepth * 0.1) * 0.005;
+            child.scale.multiplyScalar(breathing);
           }
         });
         

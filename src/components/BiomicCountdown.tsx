@@ -23,6 +23,9 @@ export default function BiomicCountdown() {
     controls: OrbitControls;
     growthEngine: GrowthEngine;
     particleSystem: ParticleSystem;
+    mainLight: THREE.DirectionalLight;
+    rimLight: THREE.PointLight;
+    accentLight: THREE.PointLight;
     currentMesh?: THREE.Mesh;
     frameId: number;
     mouse: THREE.Vector2;
@@ -49,7 +52,9 @@ export default function BiomicCountdown() {
 
     // SCENE SETUP
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x050505);
+    const baseColor = new THREE.Color(0x050505);
+    scene.background = baseColor;
+    scene.fog = new THREE.FogExp2(0x050505, 0.02);
 
     const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
     camera.position.set(0, 0, 15);
@@ -74,9 +79,9 @@ export default function BiomicCountdown() {
 
     const bloomPass = new UnrealBloomPass(
       new THREE.Vector2(window.innerWidth, window.innerHeight),
-      1.8, // strength (slightly boosted)
-      0.65, // radius (softer glow)
-      0.35 // threshold (lower to catch more highlights)
+      2.2, // strength - increased for more impact
+      0.8, // radius - wider for dreamier glow
+      0.25 // threshold - lower to catch more subtle bioluminescence
     );
     composer.addPass(bloomPass);
 
@@ -117,9 +122,84 @@ export default function BiomicCountdown() {
 
     const growthEngine = new GrowthEngine(scene);
     const particleSystem = new ParticleSystem(scene);
+    
+    // VOLUMETRIC FOG VOLUME
+    const fogVolumeGeo = new THREE.BoxGeometry(100, 100, 100);
+    const fogVolumeMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      side: THREE.BackSide,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        cameraPos: { value: camera.position },
+        lightPos1: { value: mainLight.position },
+        lightColor1: { value: mainLight.color },
+        lightPos2: { value: rimLight.position },
+        lightColor2: { value: rimLight.color },
+        lightPos3: { value: accentLight.position },
+        lightColor3: { value: accentLight.color },
+        time: { value: 0 },
+        density: { value: 0.015 }
+      },
+      vertexShader: `
+        varying vec3 vWorldPosition;
+        void main() {
+          vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPosition.xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vWorldPosition;
+        uniform vec3 cameraPos;
+        uniform vec3 lightPos1;
+        uniform vec3 lightColor1;
+        uniform vec3 lightPos2;
+        uniform vec3 lightColor2;
+        uniform vec3 lightPos3;
+        uniform vec3 lightColor3;
+        uniform float time;
+        uniform float density;
+
+        void main() {
+          vec3 rayDir = normalize(vWorldPosition - cameraPos);
+          float d = length(vWorldPosition - cameraPos);
+          
+          float fog = 0.0;
+          
+          // Simplified volumetric scattering towards lights
+          vec3 lp[3];
+          lp[0] = lightPos1; lp[1] = lightPos2; lp[2] = lightPos3;
+          vec3 lc[3];
+          lc[0] = lightColor1; lc[1] = lightColor2; lc[2] = lightColor3;
+          
+          vec3 finalColor = vec3(0.0);
+          
+          for(int i = 0; i < 3; i++) {
+            float distToLight = length(vWorldPosition - lp[i]);
+            float scatter = pow(clamp(1.0 - distToLight / 30.0, 0.0, 1.0), 3.0);
+            finalColor += lc[i] * scatter * 0.1;
+            fog += scatter * density;
+          }
+          
+          // Noise/Shimmer
+          float noise = sin(vWorldPosition.x * 0.1 + time) * cos(vWorldPosition.y * 0.1 - time * 0.5);
+          fog *= (0.8 + noise * 0.2);
+
+          gl_FragColor = vec4(finalColor, fog);
+        }
+      `
+    });
+    const fogVolume = new THREE.Mesh(fogVolumeGeo, fogVolumeMat);
+    scene.add(fogVolume);
+
     const mouse = new THREE.Vector2();
 
-    engineRef.current = { scene, camera, renderer, composer, controls, growthEngine, particleSystem, frameId: 0, mouse };
+    engineRef.current = { 
+      scene, camera, renderer, composer, controls, growthEngine, particleSystem, 
+      mainLight, rimLight, accentLight,
+      frameId: 0, mouse 
+    };
 
     const animate = () => {
       const { scene, camera, renderer, composer, controls, growthEngine, particleSystem, mouse, currentMesh } = engineRef.current!;
@@ -136,11 +216,21 @@ export default function BiomicCountdown() {
 
       const time = performance.now() * 0.001;
 
+      // Update fog volume
+      const fogVolume = scene.getObjectByProperty('type', 'Mesh') as THREE.Mesh;
+      if (fogVolume && fogVolume.material instanceof THREE.ShaderMaterial) {
+        fogVolume.material.uniforms.time.value = time;
+        fogVolume.material.uniforms.cameraPos.value.copy(camera.position);
+        fogVolume.material.uniforms.lightColor1.value.copy(engineRef.current!.mainLight.color);
+        fogVolume.material.uniforms.lightColor2.value.copy(engineRef.current!.rimLight.color);
+        fogVolume.material.uniforms.lightColor3.value.copy(engineRef.current!.accentLight.color);
+      }
+
       const pulseFreq = 2.5;
       const baseEmissiveIntensity = 1.6 + Math.sin(time * pulseFreq) * 1.2;
 
       // Update shader uniforms and pulsing for all biomic elements
-      const updateMaterial = (mesh: THREE.Mesh) => {
+      const updateMaterial = (mesh: THREE.Mesh, influence: number = 0) => {
         const mat = mesh.material as any;
         if (!mat) return;
 
@@ -151,21 +241,41 @@ export default function BiomicCountdown() {
           mat.userData.shader.uniforms.time.value = time;
         }
 
-        // Pulse emissive ONLY for biomic-tagged materials
+        // Pulse emissive ONLY for biomic-tagged materials with hover boost
         if (mat.userData?.isBiomicMaterial && mat instanceof THREE.MeshStandardMaterial) {
-          mat.emissiveIntensity = baseEmissiveIntensity;
+          const hoverBoost = influence * 1.5;
+          mat.emissiveIntensity = baseEmissiveIntensity + hoverBoost;
+          
+          // Subtly shift color towards white on hover
+          if (influence > 0.1 && mat.userData.baseColor === undefined) {
+             mat.userData.baseColor = mat.color.clone();
+          }
+          if (mat.userData.baseColor) {
+             mat.color.copy(mat.userData.baseColor).lerp(new THREE.Color(0xffffff), influence * 0.3);
+          }
         }
       };
 
       if (currentMesh) {
-        updateMaterial(currentMesh);
+        // Calculate main mesh influence separately
+        const worldPos = new THREE.Vector3();
+        currentMesh.getWorldPosition(worldPos);
+        const projection = worldPos.project(camera);
+        const influence = Math.max(0, 1.0 - mouse.distanceTo(new THREE.Vector2(projection.x, projection.y)) * 1.5);
+        updateMaterial(currentMesh, influence);
       }
 
       growthEngine.groups.forEach(group => {
-        group.traverse(child => {
-          if (child instanceof THREE.Mesh) {
-            updateMaterial(child);
-          }
+        group.children.forEach(pivot => {
+          const plant = pivot.children[0] as THREE.Group;
+          if (!plant || !plant.userData) return;
+          const influence = plant.userData.hoverInfluence || 0;
+          
+          plant.traverse(child => {
+            if (child instanceof THREE.Mesh) {
+              updateMaterial(child, influence);
+            }
+          });
         });
       });
 
@@ -213,8 +323,50 @@ export default function BiomicCountdown() {
         
         const updateNumber = (num: number) => {
           const biome = BIOMES[num];
-          const { scene, growthEngine, particleSystem } = engineRef.current!;
+          const { scene, growthEngine, particleSystem, rimLight, accentLight, composer } = engineRef.current!;
+          const bloomPass = composer.passes[1] as UnrealBloomPass;
           
+          // Smoothly transition fog and background
+          const targetFogColor = new THREE.Color(biome.leafColor).multiplyScalar(0.05);
+          const currentFog = scene.fog as THREE.FogExp2;
+          
+          // Bloom targets
+          const isZenith = biome.key === 'zenith';
+          const targetBloomStrength = isZenith ? 3.0 : 2.0;
+          const targetBloomRadius = isZenith ? 1.0 : 0.7;
+          
+          // Light color targets
+          const targetRimColor = new THREE.Color(biome.leafColor).lerp(new THREE.Color(0xffffff), 0.5);
+          const targetAccentColor = new THREE.Color(biome.treeColor).lerp(new THREE.Color(0xffffff), 0.2);
+
+          // Inline animation for fog and light transition
+          const startColor = currentFog.color.clone();
+          const startRim = rimLight.color.clone();
+          const startAccent = accentLight.color.clone();
+          const startBloomStrength = bloomPass.strength;
+          const startBloomRadius = bloomPass.radius;
+          const startTime = performance.now();
+          const duration = 2000;
+
+          const animateTransition = () => {
+            const now = performance.now();
+            const alpha = Math.min((now - startTime) / duration, 1);
+            const eased = 1 - Math.pow(1 - alpha, 3); // Ease out cubic
+
+            currentFog.color.copy(startColor).lerp(targetFogColor, eased);
+            scene.background = currentFog.color;
+            
+            rimLight.color.copy(startRim).lerp(targetRimColor, eased);
+            accentLight.color.copy(startAccent).lerp(targetAccentColor, eased);
+
+            // Transition bloom
+            bloomPass.strength = startBloomStrength + (targetBloomStrength - startBloomStrength) * eased;
+            bloomPass.radius = startBloomRadius + (targetBloomRadius - startBloomRadius) * eased;
+
+            if (alpha < 1) requestAnimationFrame(animateTransition);
+          };
+          animateTransition();
+
           // Burst effect on transition
           particleSystem.burst(biome.leafColor);
 
@@ -422,9 +574,35 @@ function createBiomeMaterial(biome: BiomeConfig): THREE.Material {
   switch (biome.key) {
     case 'sakura':
       material = new THREE.MeshStandardMaterial({ 
-        color: 0x3d2b1f, roughness: 0.8, metalness: 0.1,
-        emissive: 0xffb7c5, emissiveIntensity: 0.2
+        color: 0x2c1e14, roughness: 0.8, metalness: 0.1,
+        emissive: 0xff8fb1, emissiveIntensity: 0.2
       });
+      material.defines = { 'USE_UV': '' };
+      material.onBeforeCompile = (shader) => {
+        shader.uniforms.time = timeUniform;
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <common>',
+          `#include <common>
+          uniform float time;
+          
+          float getVein(vec2 uv, float t) {
+            float v = sin(uv.x * 20.0 + uv.y * 10.0 + t) * 0.5 + 0.5;
+            v *= sin(uv.y * 30.0 - uv.x * 5.0 - t * 0.5) * 0.5 + 0.5;
+            return pow(v, 4.0);
+          }
+          `
+        ).replace(
+          '#include <emissivemap_fragment>',
+          `
+          #include <emissivemap_fragment>
+          vec2 uv = vUv * 2.0;
+          float vein = getVein(uv, time * 2.0);
+          float glow = sin(time * 3.0) * 0.5 + 0.5;
+          totalEmissiveRadiance += vec3(1.0, 0.4, 0.6) * vein * (glow * 2.0 + 1.0);
+          `
+        );
+        material.userData.shader = shader;
+      };
       break;
 
     case 'monsoon':
