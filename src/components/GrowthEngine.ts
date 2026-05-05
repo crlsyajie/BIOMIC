@@ -91,6 +91,22 @@ export class GrowthEngine {
     let depth = 0;
     let maxDepth = 0;
 
+    // PRE-PASS: Calculate maxDepth for normalization
+    let tempDepth = 0;
+    for (const char of sentence) {
+        if (char === 'F') {
+            tempDepth++;
+            maxDepth = Math.max(maxDepth, tempDepth);
+        } else if (char === '[') {
+            stack.push({ pos: new THREE.Vector3(), quat: new THREE.Quaternion(), thickness: 0, depth: tempDepth });
+        } else if (char === ']') {
+            const s = stack.pop()!;
+            tempDepth = s.depth;
+        }
+    }
+    stack.length = 0; // Clear stack
+    depth = 0; // Reset for actual generation
+
     // Add root anchor (small bulb or base spreading)
     const anchorGeom = new THREE.SphereGeometry(currentThickness * 1.8, 8, 8);
     anchorGeom.scale(1, 0.4, 1); // Flatten it
@@ -131,29 +147,85 @@ export class GrowthEngine {
         const branchGeom = new THREE.CylinderGeometry(currentThickness * 0.7, currentThickness, randLen, segments);
         branchGeom.translate(0, randLen / 2, 0);
         
-        const depthFactor = Math.min(1, depth / (maxDepth || 10));
+        const depthFactor = Math.min(1, depth / (maxDepth || 1));
         const branchColor = new THREE.Color(config.treeColor).clone();
-        // Shift color towards a lighter, more vibrant hue at the tips
-        branchColor.lerp(new THREE.Color(config.leafColor), depthFactor * 0.4);
         
-        const branchMat = new THREE.MeshStandardMaterial({ 
+        // Organic color gradient: Darker/browner at base, lighter/leaf-colored at tips
+        branchColor.lerp(new THREE.Color(config.leafColor), depthFactor * 0.5);
+        
+        const branchMat = new THREE.MeshPhysicalMaterial({ 
             color: branchColor,
-            roughness: (config.key === 'cyber' || config.key === 'zenith' ? 0.1 : 0.8) - depthFactor * 0.2,
-            metalness: config.key === 'cyber' || config.key === 'zenith' ? 1.0 : 0.05
+            roughness: (config.key === 'cyber' || config.key === 'zenith' ? 0.1 : 0.7) + (1.0 - depthFactor) * 0.2,
+            metalness: config.key === 'cyber' || config.key === 'zenith' ? 0.8 : 0.05,
+            clearcoat: config.key === 'rainforest' ? 0.3 : 0,
+            clearcoatRoughness: 0.2
         });
 
-        // Add a subtle organic glow (fake SSS)
+        // Improved organic subsurface scattering (fake SSS) + Zenith Liquid Gold
         branchMat.onBeforeCompile = (shader) => {
             shader.uniforms.depthFactor = { value: depthFactor };
+            shader.uniforms.sssColor = { value: new THREE.Color(config.leafColor).multiplyScalar(0.25) };
+            shader.uniforms.time = { value: 0 };
+            
+            const isZenith = config.key === 'zenith';
+            const isOrganic = config.key !== 'cyber' && config.key !== 'zenith';
+
             shader.fragmentShader = shader.fragmentShader.replace(
                 '#include <common>',
                 `#include <common>
-                 uniform float depthFactor;`
+                 uniform float depthFactor;
+                 uniform vec3 sssColor;
+                 uniform float time;
+                 varying vec3 vWorldPosition;
+                 
+                 // Simple noise for organic texture
+                 float hash(vec3 p) {
+                    p = fract(p * 0.3183099 + 0.1);
+                    p *= 17.0;
+                    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+                 }
+                `
             ).replace(
                 '#include <dithering_fragment>',
                 `#include <dithering_fragment>
-                 gl_FragColor.rgb += vec3(0.05, 0.1, 0.05) * (1.0 - depthFactor) * 0.5;`
+                 
+                 // Add subtle internal glow (SSS) - peaks at thinner tips
+                 float sssPower = depthFactor;
+                 float sss = pow(sssPower, 2.0) * 0.25;
+                 gl_FragColor.rgb += sssColor * sss;
+                 
+                 ${isOrganic ? `
+                 // Organic grain and roughness variation
+                 float noise = hash(vWorldPosition * 15.0);
+                 gl_FragColor.rgb *= 0.92 + noise * 0.12;
+                 ` : ''}
+
+                 ${isZenith ? `
+                 // Liquid Gold Flow for Zenith branches
+                 float t = time * 0.8;
+                 vec3 pos = vWorldPosition * 2.0;
+                 float flow = sin(pos.y * 5.0 + t + sin(pos.x * 4.0 + t)) * 0.5 + 0.5;
+                 float shimmer = pow(max(0.0, sin(pos.y * 30.0 + t * 5.0)), 15.0) * 0.4;
+                 
+                 // Hover-reactive pulse
+                 float pulse = sin(time * 5.0) * 0.5 + 0.5;
+                 gl_FragColor.rgb += vec3(1.0, 0.8, 0.2) * (flow * 0.15 + shimmer + pulse * 0.1);
+                 ` : ''}
+                 `
             );
+            
+            // We need world position for the flow
+            shader.vertexShader = shader.vertexShader.replace(
+                '#include <common>',
+                `#include <common>
+                 varying vec3 vWorldPosition;`
+            ).replace(
+                '#include <worldpos_vertex>',
+                `#include <worldpos_vertex>
+                 vWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+            );
+
+            branchMat.userData.shader = shader;
         };
 
         const branch = new THREE.Mesh(branchGeom, branchMat);
@@ -185,31 +257,81 @@ export class GrowthEngine {
         if (Math.random() > 0.3) {
             const leafType = config.key;
             let leafGeom: THREE.BufferGeometry;
+            let leafMat: THREE.Material;
             
-            if (leafType === 'desert') {
-                leafGeom = new THREE.BoxGeometry(0.1, 0.1, 0.1); // Succulent bit
-            } else if (leafType === 'cyber') {
-                leafGeom = new THREE.IcosahedronGeometry(0.08, 0);
-            } else {
-                leafGeom = new THREE.SphereGeometry(0.12, 5, 5);
-            }
-
-            const leafDepthFactor = Math.min(1, depth / (maxDepth || 10));
+            const leafDepthFactor = Math.min(1, depth / (maxDepth || 1));
             const colorVariation = 0.1 + Math.random() * 0.2;
             const finalLeafColor = new THREE.Color(config.leafColor).clone();
             finalLeafColor.lerp(new THREE.Color(0xffffff), colorVariation * 0.5);
 
-            const leafMat = new THREE.MeshPhysicalMaterial({ 
-                color: finalLeafColor,
-                roughness: 0.6,
-                transmission: 0.3, // Semi-translucent for organic feel
-                thickness: 0.05,
-                ior: 1.4,
-                sheen: 0.5,
-                sheenColor: new THREE.Color(0xffffff),
-                emissive: finalLeafColor,
-                emissiveIntensity: leafType === 'cyber' ? 1.0 : 0.15 + (leafDepthFactor * 0.2)
-            });
+            if (leafType === 'desert') {
+                leafGeom = new THREE.BoxGeometry(0.12, 0.12, 0.12);
+                leafMat = new THREE.MeshPhysicalMaterial({ 
+                    color: finalLeafColor,
+                    roughness: 0.9,
+                    transmission: 0.05,
+                    thickness: 0.5,
+                    ior: 1.4
+                });
+            } else if (leafType === 'cyber') {
+                leafGeom = new THREE.OctahedronGeometry(0.1, 0); 
+                leafMat = new THREE.MeshPhysicalMaterial({ 
+                    color: finalLeafColor,
+                    roughness: 0.15,
+                    metalness: 0.9,
+                    emissive: finalLeafColor,
+                    emissiveIntensity: 1.5,
+                    transparent: true,
+                    opacity: 0.85
+                });
+            } else if (leafType === 'deepsea') {
+                leafGeom = new THREE.TorusGeometry(0.07, 0.025, 8, 16);
+                leafMat = new THREE.MeshPhysicalMaterial({ 
+                    color: finalLeafColor,
+                    roughness: 0.1,
+                    transmission: 0.95,
+                    thickness: 1.0,
+                    ior: 1.33,
+                    attenuationColor: finalLeafColor,
+                    attenuationDistance: 0.2,
+                    emissive: new THREE.Color(0x00ffff).lerp(finalLeafColor, 0.4),
+                    emissiveIntensity: 1.2
+                });
+            } else if (leafType === 'fungal') {
+                leafGeom = new THREE.CylinderGeometry(0.14, 0.03, 0.1, 12);
+                leafMat = new THREE.MeshPhysicalMaterial({
+                    color: finalLeafColor,
+                    emissive: finalLeafColor,
+                    emissiveIntensity: 0.6,
+                    roughness: 0.6,
+                    sheen: 1.0,
+                    sheenColor: 0xaa66ff
+                });
+            } else if (leafType === 'zenith') {
+                leafGeom = new THREE.IcosahedronGeometry(0.12, 0);
+                leafMat = new THREE.MeshPhysicalMaterial({
+                    color: 0xffffff,
+                    metalness: 1.0,
+                    roughness: 0.0,
+                    transmission: 0.5,
+                    thickness: 0.5,
+                    emissive: 0xffffff,
+                    emissiveIntensity: 0.7
+                });
+            } else {
+                leafGeom = new THREE.SphereGeometry(0.14, 5, 5);
+                leafMat = new THREE.MeshPhysicalMaterial({ 
+                    color: finalLeafColor,
+                    roughness: 0.4,
+                    transmission: 0.45,
+                    thickness: 0.2,
+                    ior: 1.45,
+                    sheen: 1.0,
+                    sheenColor: new THREE.Color(0xffffff),
+                    emissive: finalLeafColor,
+                    emissiveIntensity: 0.1 + (leafDepthFactor * 0.15)
+                });
+            }
 
             const leaf = new THREE.Mesh(leafGeom, leafMat);
             leaf.position.copy(currentPos);
@@ -230,19 +352,35 @@ export class GrowthEngine {
     return group;
   }
 
-  update(mouse: THREE.Vector2) {
+  update(mouse: THREE.Vector2, camera: THREE.Camera): { hoveredPos: THREE.Vector3 | null; influence: number } {
     const now = performance.now();
     const elapsed = (now - this.startTime) / 1000;
     const growthDuration = 3; // Total growth timeline
+    
+    let bestHoverPos: THREE.Vector3 | null = null;
+    let maxInfluence = 0;
 
     this.groups.forEach(group => {
       group.children.forEach(pivot => {
         const plant = pivot.children[0] as THREE.Group;
         if (!plant) return;
         
-        const { delay, growthSpeed, swayOffset, maxDepth } = plant.userData;
+        const { delay, growthSpeed, swayOffset } = plant.userData;
         const time = now * 0.001;
         
+        // Calculate screen-space proximity for subtle hover effect
+        const plantWorldPos = new THREE.Vector3();
+        pivot.getWorldPosition(plantWorldPos);
+        const projection = plantWorldPos.clone().project(camera);
+        
+        const distToMouse = mouse.distanceTo(new THREE.Vector2(projection.x, projection.y));
+        const hoverInfluence = Math.max(0, 1.0 - distToMouse * 3.0); // Effective within closer range
+        
+        if (hoverInfluence > maxInfluence) {
+          maxInfluence = hoverInfluence;
+          bestHoverPos = plantWorldPos;
+        }
+
         // Growth animation for each segment
         const totalT = this.isGrowing ? Math.max(0, Math.min(1, (elapsed - delay) / (growthDuration * growthSpeed))) : 1;
         const currentMaxDepth = plant.userData.maxDepth || 1;
@@ -254,6 +392,14 @@ export class GrowthEngine {
           const depthThreshold = segmentDepth / currentMaxDepth;
           const segT = Math.max(0, Math.min(1, (totalT - depthThreshold * 0.6) * 3));
           const t = segT;
+
+          // Update shader uniforms (for Zenith flow etc)
+          if (child instanceof THREE.Mesh) {
+            const mat = child.material as any;
+            if (mat.userData && mat.userData.shader && mat.userData.shader.uniforms.time) {
+                mat.userData.shader.uniforms.time.value = time;
+            }
+          }
 
           if (this.isGrowing) {
             // Smooth 'Back Out' easing for an organic organic spring/overshoot
@@ -276,8 +422,8 @@ export class GrowthEngine {
             
           // Subtle idle wiggle for segments (independent of growth)
           if ((child.userData.isBranch || child.userData.isLeaf) && child.userData.baseRot) {
-            const wiggleSpeed = child.userData.isLeaf ? 2.5 : 1.2;
-            const wiggleAmt = child.userData.isLeaf ? 0.06 : 0.03;
+            const wiggleSpeed = (child.userData.isLeaf ? 2.5 : 1.2) + hoverInfluence * 2.0;
+            const wiggleAmt = (child.userData.isLeaf ? 0.06 : 0.03) + hoverInfluence * 0.04;
             
             // Lively 'snap' effect during growth
             let snapX = 0;
@@ -300,18 +446,19 @@ export class GrowthEngine {
         }
 
         // Sway/Wind effect (Gentle breeze + Mouse influence)
-        const idleSwayIntensity = 0.04;
-        const idleX = Math.sin(time * 0.8 + swayOffset) * idleSwayIntensity;
-        const idleZ = Math.cos(time * 0.7 + swayOffset * 1.1) * idleSwayIntensity;
+        const idleSwayIntensity = 0.04 + hoverInfluence * 0.08;
+        const idleX = Math.sin(time * (0.8 + hoverInfluence) + swayOffset) * idleSwayIntensity;
+        const idleZ = Math.cos(time * (0.7 + hoverInfluence) + swayOffset * 1.1) * idleSwayIntensity;
 
-        const windIntensity = 0.05 + (this.isGrowing ? 0.03 : 0);
-        const mouseX = mouse.x * 0.12;
-        const mouseY = mouse.y * 0.12;
+        const mouseX = mouse.x * (0.12 + hoverInfluence * 0.15); // Mouse tilt more when near
+        const mouseY = mouse.y * (0.12 + hoverInfluence * 0.15);
         
         plant.rotation.x = idleZ + mouseY;
         plant.rotation.z = idleX + mouseX;
       });
     });
+
+    return { hoveredPos: bestHoverPos, influence: maxInfluence };
   }
 
   clear() {

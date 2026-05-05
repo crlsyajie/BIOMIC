@@ -41,6 +41,8 @@ export default function BiomicCountdown() {
     return () => clearInterval(interval);
   }, []);
 
+  const [hoverInfo, setHoverInfo] = useState<{ pos: THREE.Vector3, opacity: number } | null>(null);
+
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -97,7 +99,14 @@ export default function BiomicCountdown() {
     const animate = () => {
       const { scene, camera, renderer, controls, growthEngine, particleSystem, mouse, currentMesh } = engineRef.current!;
       controls.update();
-      growthEngine.update(mouse);
+      const hover = growthEngine.update(mouse, camera);
+      
+      if (hover.hoveredPos && hover.influence > 0.05) {
+        setHoverInfo({ pos: hover.hoveredPos, opacity: hover.influence });
+      } else {
+        setHoverInfo(null);
+      }
+
       particleSystem.update();
 
       const time = performance.now() * 0.001;
@@ -237,8 +246,39 @@ export default function BiomicCountdown() {
     );
   }, [mounted]);
 
+  const getLabelPos = () => {
+    if (!hoverInfo || !engineRef.current) return { left: 0, top: 0, opacity: 0 };
+    const { camera } = engineRef.current;
+    
+    const vector = hoverInfo.pos.clone().project(camera);
+    const x = (vector.x * 0.5 + 0.5) * window.innerWidth;
+    const y = -(vector.y * 0.5 - 0.5) * window.innerHeight;
+    
+    return { left: x, top: y };
+  };
+
   return (
     <div className="relative w-full h-screen overflow-hidden bg-[#050505] font-sans" ref={containerRef}>
+      {/* Gentle Hover Label */}
+      <AnimatePresence>
+        {hoverInfo && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ 
+                opacity: Math.pow(hoverInfo.opacity, 1.5), 
+                scale: 0.9 + hoverInfo.opacity * 0.1,
+                left: getLabelPos().left,
+                top: getLabelPos().top
+            }}
+            exit={{ opacity: 0, scale: 0.5 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="pointer-events-none absolute z-50 text-white/50 text-[10px] sm:text-xs font-mono tracking-[0.3em] italic whitespace-nowrap"
+            style={{ transform: 'translate(-50%, -180%)' }}
+          >
+            gentle...
+          </motion.div>
+        )}
+      </AnimatePresence>
       {/* Decorative Grid Overlay */}
       <div className="absolute inset-0 pointer-events-none opacity-[0.03] z-0" 
            style={{ backgroundImage: 'radial-gradient(#fff 1px, transparent 1px)', backgroundSize: '40px 40px' }}></div>
@@ -508,16 +548,25 @@ function createBiomeMaterial(biome: BiomeConfig): THREE.Material {
           vec2 uv = vUv;
           float t = time * 0.6;
           
-          // Flowing liquid texture
-          float n = sin(uv.x * 12.0 + t + sin(uv.y * 10.0 + t)) * 0.5 + 0.5;
-          float n2 = sin(uv.y * 15.0 - t * 0.5 + cos(uv.x * 8.0 + t * 1.5)) * 0.5 + 0.5;
-          float goldFlow = pow(n * n2, 2.0);
+          // Refined Flowing liquid texture
+          vec3 flowUv = vec3(uv * 3.0, time * 0.4);
           
-          // Specular-like highlights
-          float shimmer = pow(sin(uv.x * 20.0 + uv.y * 10.0 + t * 5.0) * 0.5 + 0.5, 8.0);
+          // Layered sine waves for complex flow
+          float flow = sin(uv.x * 10.0 + t + sin(uv.y * 12.0 + t * 0.8));
+          flow += sin(uv.y * 8.0 - t * 1.2 + cos(uv.x * 15.0 + t * 0.5)) * 0.5;
+          flow += sin((uv.x + uv.y) * 20.0 + t * 2.0) * 0.2;
           
-          totalEmissiveRadiance += emissive * (goldFlow * 2.0 + shimmer * 3.0);
-          totalEmissiveRadiance *= (0.6 + 0.4 * sin(t + uv.y * 5.0)); // Slow surface pulse
+          float liquid = pow(abs(flow) * 0.6, 2.5);
+          
+          // Dynamic shimmer/sparkle layer
+          float sparkle = pow(max(0.0, sin(uv.x * 50.0 + t * 4.0) * sin(uv.y * 50.0 - t * 3.0)), 20.0);
+          sparkle += pow(max(0.0, sin(uv.x * 35.0 - t * 2.0) * cos(uv.y * 45.0 + t * 5.0)), 15.0) * 0.7;
+          
+          // Surface caustic-like reflections
+          float reflections = pow(max(0.0, sin(uv.x * 15.0 + uv.y * 15.0 + t * 3.0)), 12.0) * 2.0;
+          
+          totalEmissiveRadiance += emissive * (liquid * 2.5 + sparkle * 6.0 + reflections);
+          totalEmissiveRadiance *= (0.7 + 0.3 * sin(t * 0.5 + uv.y * 3.0)); // Slow surface pulse
           `
         );
         material.userData.shader = shader;
