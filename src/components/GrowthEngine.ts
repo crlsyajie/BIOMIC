@@ -116,6 +116,8 @@ export class GrowthEngine {
         flatShading: true
     });
     const anchor = new THREE.Mesh(anchorGeom, anchorMat);
+    anchor.castShadow = true;
+    anchor.receiveShadow = true;
     anchor.userData.depth = 0;
     anchor.position.set(0, -0.02, 0); // Sink base slightly
     group.add(anchor);
@@ -129,6 +131,8 @@ export class GrowthEngine {
         rootGeom.translate(0, 0, rootLen / 2);
         
         const root = new THREE.Mesh(rootGeom, anchorMat);
+        root.castShadow = true;
+        root.receiveShadow = true;
         root.userData.depth = 0.1; // Roots grow almost immediately
         root.rotation.y = (i / rootCount) * Math.PI * 2 + Math.random() * 0.5;
         root.rotation.x = 0.15 + Math.random() * 0.1; // Subtly tilt down to hug surface
@@ -158,8 +162,11 @@ export class GrowthEngine {
             roughness: (config.key === 'cyber' || config.key === 'zenith' ? 0.1 : 0.7) + (1.0 - depthFactor) * 0.2,
             metalness: config.key === 'cyber' || config.key === 'zenith' ? 0.8 : 0.05,
             clearcoat: config.key === 'rainforest' ? 0.3 : 0,
-            clearcoatRoughness: 0.2
+            clearcoatRoughness: 0.2,
+            emissive: branchColor,
+            emissiveIntensity: 0.2 // Base intensity
         });
+        branchMat.userData.isBiomicMaterial = true;
 
         // Improved organic subsurface scattering (fake SSS) + Zenith Liquid Gold
         branchMat.onBeforeCompile = (shader) => {
@@ -229,6 +236,8 @@ export class GrowthEngine {
         };
 
         const branch = new THREE.Mesh(branchGeom, branchMat);
+        branch.castShadow = true;
+        branch.receiveShadow = true;
         branch.position.copy(currentPos);
         branch.applyQuaternion(currentQuat);
         branch.userData.depth = depth;
@@ -264,27 +273,75 @@ export class GrowthEngine {
             const finalLeafColor = new THREE.Color(config.leafColor).clone();
             finalLeafColor.lerp(new THREE.Color(0xffffff), colorVariation * 0.5);
 
-            if (leafType === 'desert') {
-                leafGeom = new THREE.BoxGeometry(0.12, 0.12, 0.12);
+            if (leafType === 'sakura') {
+                // Delicate petals
+                leafGeom = new THREE.SphereGeometry(0.08, 4, 4);
+                leafGeom.scale(1, 0.4, 0.8);
                 leafMat = new THREE.MeshPhysicalMaterial({ 
-                    color: finalLeafColor,
-                    roughness: 0.9,
-                    transmission: 0.05,
-                    thickness: 0.5,
-                    ior: 1.4
+                    color: Math.random() > 0.5 ? 0xffb7c5 : 0xffffff,
+                    roughness: 0.8,
+                    transmission: 0.2,
+                    thickness: 0.1
                 });
-            } else if (leafType === 'cyber') {
-                leafGeom = new THREE.OctahedronGeometry(0.1, 0); 
+            } else if (leafType === 'monsoon') {
+                // Oversized broad leaves (Monstera-like)
+                leafGeom = new THREE.PlaneGeometry(0.25, 0.35);
                 leafMat = new THREE.MeshPhysicalMaterial({ 
                     color: finalLeafColor,
-                    roughness: 0.15,
-                    metalness: 0.9,
-                    emissive: finalLeafColor,
-                    emissiveIntensity: 1.5,
-                    transparent: true,
-                    opacity: 0.85
+                    side: THREE.DoubleSide,
+                    roughness: 0.2,
+                    clearcoat: 0.8, // Rain-slicked look
+                    clearcoatRoughness: 0.1,
+                    transmission: 0.1
+                });
+            } else if (leafType === 'autumn') {
+                // Maple-like leaves
+                leafGeom = new THREE.PlaneGeometry(0.15, 0.15);
+                leafMat = new THREE.MeshPhysicalMaterial({ 
+                    color: [0xd35400, 0xe67e22, 0xc0392b, 0xf1c40f][Math.floor(Math.random() * 4)],
+                    side: THREE.DoubleSide,
+                    roughness: 0.8
+                });
+            } else if (leafType === 'cactus') {
+                // Succulent blooms
+                leafGeom = new THREE.SphereGeometry(0.1, 8, 8);
+                leafGeom.scale(1, 0.6, 1);
+                leafMat = new THREE.MeshPhysicalMaterial({ 
+                    color: Math.random() > 0.5 ? 0xff69b4 : 0xffd700,
+                    emissive: 0xff69b4,
+                    emissiveIntensity: 0.2,
+                    roughness: 0.6
+                });
+            } else if (leafType === 'meadow') {
+                // Daisies/buttercups
+                leafGeom = new THREE.TorusGeometry(0.05, 0.02, 6, 10);
+                leafMat = new THREE.MeshPhysicalMaterial({ 
+                    color: Math.random() > 0.5 ? 0xffffff : 0x9370db, // White daisy or purple lupine
+                    roughness: 0.5,
+                    sheen: 1.0
+                });
+            } else if (leafType === 'winter') {
+                // Sharp frost crystals
+                leafGeom = new THREE.TetrahedronGeometry(0.12);
+                leafMat = new THREE.MeshPhysicalMaterial({ 
+                    color: 0xffffff,
+                    transmission: 0.9,
+                    thickness: 1.0,
+                    ior: 1.5,
+                    roughness: 0.0,
+                    metalness: 0.1
+                });
+            } else if (leafType === 'lavender') {
+                // Lavender stalks
+                leafGeom = new THREE.CylinderGeometry(0.02, 0.04, 0.3, 4);
+                leafMat = new THREE.MeshPhysicalMaterial({ 
+                    color: 0x9370db,
+                    roughness: 0.7,
+                    emissive: 0x9370db,
+                    emissiveIntensity: 0.1
                 });
             } else if (leafType === 'deepsea') {
+                // Glowing corals
                 leafGeom = new THREE.TorusGeometry(0.07, 0.025, 8, 16);
                 leafMat = new THREE.MeshPhysicalMaterial({ 
                     color: finalLeafColor,
@@ -297,26 +354,26 @@ export class GrowthEngine {
                     emissive: new THREE.Color(0x00ffff).lerp(finalLeafColor, 0.4),
                     emissiveIntensity: 1.2
                 });
-            } else if (leafType === 'fungal') {
+            } else if (leafType === 'mushroom') {
+                // Spore caps
                 leafGeom = new THREE.CylinderGeometry(0.14, 0.03, 0.1, 12);
                 leafMat = new THREE.MeshPhysicalMaterial({
-                    color: finalLeafColor,
-                    emissive: finalLeafColor,
-                    emissiveIntensity: 0.6,
-                    roughness: 0.6,
-                    sheen: 1.0,
-                    sheenColor: 0xaa66ff
+                    color: 0xff0000,
+                    emissive: 0xff0000,
+                    emissiveIntensity: 0.8,
+                    roughness: 0.4
                 });
             } else if (leafType === 'zenith') {
+                // Light-flowers
                 leafGeom = new THREE.IcosahedronGeometry(0.12, 0);
                 leafMat = new THREE.MeshPhysicalMaterial({
                     color: 0xffffff,
                     metalness: 1.0,
                     roughness: 0.0,
-                    transmission: 0.5,
+                    transmission: 0.8,
                     thickness: 0.5,
                     emissive: 0xffffff,
-                    emissiveIntensity: 0.7
+                    emissiveIntensity: 1.5
                 });
             } else {
                 leafGeom = new THREE.SphereGeometry(0.14, 5, 5);
@@ -334,6 +391,12 @@ export class GrowthEngine {
             }
 
             const leaf = new THREE.Mesh(leafGeom, leafMat);
+            leaf.userData.isBiomicMaterial = true; 
+            if (leafMat instanceof THREE.Material) {
+              leafMat.userData.isBiomicMaterial = true;
+            }
+            leaf.castShadow = true;
+            leaf.receiveShadow = true;
             leaf.position.copy(currentPos);
             leaf.userData.depth = depth + 1; // Leaves sprout after branch
             leaf.userData.isLeaf = true;
@@ -422,8 +485,10 @@ export class GrowthEngine {
             
           // Subtle idle wiggle for segments (independent of growth)
           if ((child.userData.isBranch || child.userData.isLeaf) && child.userData.baseRot) {
-            const wiggleSpeed = (child.userData.isLeaf ? 2.5 : 1.2) + hoverInfluence * 2.0;
-            const wiggleAmt = (child.userData.isLeaf ? 0.06 : 0.03) + hoverInfluence * 0.04;
+            const idleWiggleAmp = (child.userData.isLeaf ? 0.07 : 0.03) * (this.isGrowing ? 0.6 : 1.0);
+            const wiggleInfluence = 1.0 - hoverInfluence * 0.8; // Significantly more wiggle when not hovered
+            const wiggleSpeed = (child.userData.isLeaf ? 1.5 : 0.8) * (1.0 + Math.sin(swayOffset) * 0.1);
+            const wiggleAmt = idleWiggleAmp * wiggleInfluence;
             
             // Lively 'snap' effect during growth
             let snapX = 0;
@@ -432,10 +497,13 @@ export class GrowthEngine {
               snapX = Math.sin(time * 15) * 0.02 * snapIntensity;
             }
 
-            // Combine base rotation with wiggles and snaps
-            child.rotation.x = child.userData.baseRot.x + snapX;
+            // Combine base rotation with wiggles and snaps (multi-frequency for jitter-reduction)
+            const wiggleRotationZ = Math.sin(time * wiggleSpeed + segmentDepth) * 0.7 + Math.sin(time * wiggleSpeed * 1.5 + segmentDepth * 0.5) * 0.3;
+            const wiggleRotationX = Math.cos(time * wiggleSpeed * 0.8 + segmentDepth * 1.2) * 0.7 + Math.cos(time * wiggleSpeed * 1.3 + segmentDepth) * 0.3;
+
+            child.rotation.x = child.userData.baseRot.x + snapX + wiggleRotationX * (wiggleAmt * 0.4);
             child.rotation.y = child.userData.baseRot.y;
-            child.rotation.z = child.userData.baseRot.z + Math.sin(time * wiggleSpeed + segmentDepth) * wiggleAmt;
+            child.rotation.z = child.userData.baseRot.z + wiggleRotationZ * wiggleAmt;
           }
         });
         
@@ -446,12 +514,18 @@ export class GrowthEngine {
         }
 
         // Sway/Wind effect (Gentle breeze + Mouse influence)
-        const idleSwayIntensity = 0.04 + hoverInfluence * 0.08;
-        const idleX = Math.sin(time * (0.8 + hoverInfluence) + swayOffset) * idleSwayIntensity;
-        const idleZ = Math.cos(time * (0.7 + hoverInfluence) + swayOffset * 1.1) * idleSwayIntensity;
+        const isNotGrowingAmt = this.isGrowing ? 0.5 : 1.0;
+        const baseIdleAmp = 0.04 * isNotGrowingAmt;
+        // More sway when NOT growing and NOT hovered
+        const idleSwayIntensity = baseIdleAmp * (1.0 + (1.0 - hoverInfluence) * 1.2); 
+        
+        // Complex sinusoid for more "gentle/natural" sway
+        const idleX = (Math.sin(time * 0.6 + swayOffset) * 0.7 + Math.sin(time * 1.1 + swayOffset * 2) * 0.3) * idleSwayIntensity;
+        const idleZ = (Math.cos(time * 0.5 + swayOffset * 1.3) * 0.7 + Math.cos(time * 0.9 + swayOffset * 0.5) * 0.3) * idleSwayIntensity;
 
-        const mouseX = mouse.x * (0.12 + hoverInfluence * 0.15); // Mouse tilt more when near
-        const mouseY = mouse.y * (0.12 + hoverInfluence * 0.15);
+        const mouseWindIntensity = 0.04 + hoverInfluence * 0.3; 
+        const mouseX = mouse.x * mouseWindIntensity;
+        const mouseY = mouse.y * mouseWindIntensity;
         
         plant.rotation.x = idleZ + mouseY;
         plant.rotation.z = idleX + mouseX;

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { OrbitControls, FontLoader, TextGeometry } from 'three-stdlib';
+import { OrbitControls, FontLoader, TextGeometry, EffectComposer, RenderPass, UnrealBloomPass } from 'three-stdlib';
 import { motion, AnimatePresence } from 'motion/react';
 import { BIOMES, BiomeConfig } from './biomes';
 import { GrowthEngine } from './GrowthEngine';
@@ -19,6 +19,7 @@ export default function BiomicCountdown() {
     scene: THREE.Scene;
     camera: THREE.PerspectiveCamera;
     renderer: THREE.WebGLRenderer;
+    composer: EffectComposer;
     controls: OrbitControls;
     growthEngine: GrowthEngine;
     particleSystem: ParticleSystem;
@@ -61,8 +62,23 @@ export default function BiomicCountdown() {
     renderer.domElement.style.left = '0';
     renderer.domElement.style.zIndex = '1';
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.5;
+    renderer.toneMappingExposure = 1.2;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     containerRef.current.appendChild(renderer.domElement);
+
+    // POST PROCESSING
+    const composer = new EffectComposer(renderer);
+    const renderPass = new RenderPass(scene, camera);
+    composer.addPass(renderPass);
+
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      1.8, // strength (slightly boosted)
+      0.65, // radius (softer glow)
+      0.35 // threshold (lower to catch more highlights)
+    );
+    composer.addPass(bloomPass);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -71,33 +87,42 @@ export default function BiomicCountdown() {
     controls.enableZoom = false;
     controls.target.set(0, 0, 0);
 
-    // LIGHTING
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    // LIGHTING - Redesigned for dramatic depth
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.2);
     scene.add(ambientLight);
 
-    const mainLight = new THREE.DirectionalLight(0xffffff, 2);
-    mainLight.position.set(5, 10, 7);
+    const mainLight = new THREE.DirectionalLight(0xffffff, 4);
+    mainLight.position.set(10, 20, 10);
+    mainLight.castShadow = true;
+    mainLight.shadow.mapSize.width = 2048;
+    mainLight.shadow.mapSize.height = 2048;
+    mainLight.shadow.camera.near = 0.5;
+    mainLight.shadow.camera.far = 50;
+    mainLight.shadow.camera.left = -15;
+    mainLight.shadow.camera.right = 15;
+    mainLight.shadow.camera.top = 15;
+    mainLight.shadow.camera.bottom = -15;
     scene.add(mainLight);
 
-    const pointLight1 = new THREE.PointLight(0xffffff, 3);
-    pointLight1.position.set(10, 10, 10);
-    scene.add(pointLight1);
+    const rimLight = new THREE.PointLight(0x00ffff, 8, 30);
+    rimLight.position.set(-10, 5, -5);
+    scene.add(rimLight);
 
-    const pointLight2 = new THREE.PointLight(0xffffff, 2);
-    pointLight2.position.set(-10, -5, 5);
-    scene.add(pointLight2);
+    const accentLight = new THREE.PointLight(0xffaa00, 5, 25);
+    accentLight.position.set(5, -5, 5);
+    scene.add(accentLight);
 
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x000000, 1);
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x000000, 0.5);
     scene.add(hemiLight);
 
     const growthEngine = new GrowthEngine(scene);
     const particleSystem = new ParticleSystem(scene);
     const mouse = new THREE.Vector2();
 
-    engineRef.current = { scene, camera, renderer, controls, growthEngine, particleSystem, frameId: 0, mouse };
+    engineRef.current = { scene, camera, renderer, composer, controls, growthEngine, particleSystem, frameId: 0, mouse };
 
     const animate = () => {
-      const { scene, camera, renderer, controls, growthEngine, particleSystem, mouse, currentMesh } = engineRef.current!;
+      const { scene, camera, renderer, composer, controls, growthEngine, particleSystem, mouse, currentMesh } = engineRef.current!;
       controls.update();
       const hover = growthEngine.update(mouse, camera);
       
@@ -111,22 +136,40 @@ export default function BiomicCountdown() {
 
       const time = performance.now() * 0.001;
 
-      // Update shader uniforms
-      if (currentMesh) {
-        const mat = currentMesh.material as any;
+      const pulseFreq = 2.5;
+      const baseEmissiveIntensity = 1.6 + Math.sin(time * pulseFreq) * 1.2;
+
+      // Update shader uniforms and pulsing for all biomic elements
+      const updateMaterial = (mesh: THREE.Mesh) => {
+        const mat = mesh.material as any;
+        if (!mat) return;
+
+        // Sync Time for custom shaders
         if (mat.uniforms && mat.uniforms.time) {
-            mat.uniforms.time.value = time;
+          mat.uniforms.time.value = time;
         } else if (mat.userData && mat.userData.shader && mat.userData.shader.uniforms.time) {
-            mat.userData.shader.uniforms.time.value = time;
+          mat.userData.shader.uniforms.time.value = time;
         }
-        
-        // Pulse emissive for extra "shine"
-        if (mat instanceof THREE.MeshStandardMaterial) {
-          mat.emissiveIntensity = 1.0 + Math.sin(time * 4.0) * 0.5;
+
+        // Pulse emissive ONLY for biomic-tagged materials
+        if (mat.userData?.isBiomicMaterial && mat instanceof THREE.MeshStandardMaterial) {
+          mat.emissiveIntensity = baseEmissiveIntensity;
         }
+      };
+
+      if (currentMesh) {
+        updateMaterial(currentMesh);
       }
 
-      renderer.render(scene, camera);
+      growthEngine.groups.forEach(group => {
+        group.traverse(child => {
+          if (child instanceof THREE.Mesh) {
+            updateMaterial(child);
+          }
+        });
+      });
+
+      composer.render();
       engineRef.current!.frameId = requestAnimationFrame(animate);
     };
 
@@ -134,6 +177,7 @@ export default function BiomicCountdown() {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
+      composer.setSize(window.innerWidth, window.innerHeight);
     };
 
     const handleMouseMove = (e: MouseEvent) => {
@@ -206,6 +250,8 @@ export default function BiomicCountdown() {
 
           const material = createBiomeMaterial(biome);
           const mesh = new THREE.Mesh(geometry, material);
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
           mesh.rotation.y = -Math.PI / 8;
           mesh.scale.set(0, 0, 0); // Start small for entry animation
           scene.add(mesh);
@@ -374,67 +420,91 @@ function createBiomeMaterial(biome: BiomeConfig): THREE.Material {
   let material: THREE.Material;
 
   switch (biome.key) {
-    case 'volcanic':
+    case 'sakura':
       material = new THREE.MeshStandardMaterial({ 
-        color: 0x1a1a1a, roughness: 0.2, metalness: 0.8,
-        emissive: 0xff4400, emissiveIntensity: 1.0
+        color: 0x3d2b1f, roughness: 0.8, metalness: 0.1,
+        emissive: 0xffb7c5, emissiveIntensity: 0.2
       });
+      break;
+
+    case 'monsoon':
+      material = new THREE.MeshStandardMaterial({ 
+        color: 0x164624, roughness: 0.2, metalness: 0.5,
+        emissive: 0x002244, emissiveIntensity: 0.1
+      });
+      material.defines = { 'USE_UV': '' };
       material.onBeforeCompile = (shader) => {
         shader.uniforms.time = timeUniform;
-        shader.vertexShader = `uniform float time;\n${shader.vertexShader}`.replace(
-          '#include <begin_vertex>',
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <common>',
+          `#include <common>
+          uniform float time;`
+        ).replace(
+          '#include <emissivemap_fragment>',
           `
-          #include <begin_vertex>
-          transformed.x += sin(transformed.y * 2.0 + time * 5.0) * 0.05;
-          transformed.z += cos(transformed.x * 2.0 + time * 3.0) * 0.05;
+          #include <emissivemap_fragment>
+          // Water droplets effect
+          vec2 uv = vUv * 10.0;
+          float droplet = 0.0;
+          for(int i=0; i<3; i++) {
+              vec2 p = fract(uv + vec2(0.0, time * 0.2)) - 0.5;
+              droplet += smoothstep(0.1, 0.05, length(p)) * 0.5;
+          }
+          totalEmissiveRadiance += vec3(0.5, 0.8, 1.0) * droplet;
           `
         );
         material.userData.shader = shader;
       };
       break;
 
-    case 'cyber':
+    case 'autumn':
       material = new THREE.MeshStandardMaterial({ 
-        color: 0x111111, metalness: 1.0, roughness: 0.05, 
-        emissive: 0x00ffff, emissiveIntensity: 1.0 
+        color: 0x5a3d2b, roughness: 0.9,
+        emissive: 0xd35400, emissiveIntensity: 0.3
       });
-      // Force UV usage so vUv is available in fragment shader
-      material.defines = { 'USE_UV': '' };
+      break;
+
+    case 'cactus':
+      // Sandy texture
+      material = new THREE.MeshStandardMaterial({ 
+        color: 0xc2b280, roughness: 1.0, 
+        emissive: 0xffd700, emissiveIntensity: 0.1
+      });
       material.onBeforeCompile = (shader) => {
-        shader.uniforms.time = timeUniform;
-        shader.vertexShader = `
-          #ifndef USE_UV
-            varying vec2 vUv;
-          #endif
-          uniform float time;
-          ${shader.vertexShader}
-        `.replace(
-          '#include <begin_vertex>',
-          `
-          #include <begin_vertex>
-          #ifndef USE_UV
-            vUv = uv;
-          #endif
-          `
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <common>',
+          `#include <common>
+           float hash(vec2 p) { return fract(sin(dot(p, vec2(12.7, 31.1))) * 43758.5453); }`
+        ).replace(
+          '#include <dithering_fragment>',
+          `#include <dithering_fragment>
+           float n = hash(gl_FragCoord.xy * 0.1);
+           gl_FragColor.rgb *= 0.9 + n * 0.2;`
         );
-        shader.fragmentShader = `
-          #ifndef USE_UV
-            varying vec2 vUv;
-          #endif
-          uniform float time;
-          ${shader.fragmentShader}
-        `.replace(
-          '#include <emissivemap_fragment>',
-          `
-          #include <emissivemap_fragment>
-          float pulse = (sin(time * 4.0) * 0.5 + 0.5);
-          float grid = abs(sin(vUv.x * 40.0 + time) * sin(vUv.y * 40.0)) * 0.5;
-          float scanline = smoothstep(0.48, 0.5, abs(fract(vUv.y * 10.0 + time * 0.5) - 0.5));
-          totalEmissiveRadiance *= (0.2 + pulse * 1.5 + grid * 2.0 + scanline * 5.0);
-          `
-        );
-        material.userData.shader = shader;
       };
+      break;
+
+    case 'meadow':
+      material = new THREE.MeshStandardMaterial({ 
+        color: 0x228b22, roughness: 0.7,
+        emissive: 0x44ff44, emissiveIntensity: 0.2
+      });
+      break;
+
+    case 'winter':
+      // Crystalline frost - replaced MeshPhysical to avoid shader errors
+      material = new THREE.MeshStandardMaterial({ 
+        color: 0x88ccff, metalness: 0.5, roughness: 0.2,
+        transparent: true, opacity: 0.9,
+        emissive: 0xffffff, emissiveIntensity: 0.2
+      });
+      break;
+
+    case 'lavender':
+      material = new THREE.MeshStandardMaterial({ 
+        color: 0x483d8b, roughness: 0.6,
+        emissive: 0x9370db, emissiveIntensity: 0.8
+      });
       break;
 
     case 'deepsea':
@@ -445,68 +515,28 @@ function createBiomeMaterial(biome: BiomeConfig): THREE.Material {
       material.defines = { 'USE_UV': '' };
       material.onBeforeCompile = (shader) => {
         shader.uniforms.time = timeUniform;
-        shader.vertexShader = `
-          #ifndef USE_UV
-            varying vec2 vUv;
-          #endif
-          uniform float time;
-          ${shader.vertexShader}
-        `.replace(
-          '#include <begin_vertex>',
-          `
-          #include <begin_vertex>
-          #ifndef USE_UV
-            vUv = uv;
-          #endif
-          transformed.x += sin(transformed.y * 1.5 + time * 1.5) * 0.04;
-          transformed.z += cos(transformed.x * 1.5 + time * 1.2) * 0.04;
-          `
-        );
-        shader.fragmentShader = `
-          #ifndef USE_UV
-            varying vec2 vUv;
-          #endif
-          uniform float time;
-          ${shader.fragmentShader}
-        `.replace(
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <common>',
+          `#include <common>
+          uniform float time;`
+        ).replace(
           '#include <emissivemap_fragment>',
           `
           #include <emissivemap_fragment>
-          
-          // Camera-reactive offset for parallax caustics
-          vec3 viewDir = normalize(vViewPosition);
-          vec2 shift = viewDir.xy * 0.15; 
-          
-          vec2 uv = (vUv + shift) * 7.0;
-          float t = time * 0.6;
-          
-          float c = 0.0;
-          for(int i=1; i<5; i++) {
-            float fi = float(i);
-            uv += sin(uv.yx * fi + t) * 0.3;
-            c += 1.0 / length(uv - sin(uv.yx * 0.5 + t));
-          }
-          c = pow(c * 0.12, 4.0);
-          c = clamp(c, 0.0, 1.0);
-          
-          // Secondary layer for more organic depth
-          float c2 = 0.0;
-          vec2 uv2 = (vUv + shift * 0.6) * 10.0;
-          for(int i=1; i<4; i++) {
-            float fi = float(i);
-            uv2 += cos(uv2.yx * fi - t * 0.4) * 0.2;
-            c2 += 1.0 / length(uv2 - cos(uv2.yx * 0.3 - t));
-          }
-          c2 = pow(c2 * 0.1, 3.5);
-          c2 = clamp(c2, 0.0, 1.0);
-          
-          totalEmissiveRadiance += vec3(0.0, 0.5, 1.0) * c * 4.0;
-          totalEmissiveRadiance += vec3(0.1, 0.3, 0.6) * c2 * 2.0;
-          totalEmissiveRadiance *= (0.3 + 0.7 * vUv.y);
+          vec2 uv = vUv * 5.0;
+          float glow = sin(uv.x + time) * cos(uv.y + time * 0.5);
+          totalEmissiveRadiance += vec3(0.0, 0.5, 1.0) * (glow * 0.5 + 0.5);
           `
         );
         material.userData.shader = shader;
       };
+      break;
+
+    case 'mushroom':
+      material = new THREE.MeshStandardMaterial({ 
+        color: 0x3d2b1f, roughness: 0.4,
+        emissive: 0xff0000, emissiveIntensity: 1.2
+      });
       break;
 
     case 'zenith':
@@ -514,123 +544,35 @@ function createBiomeMaterial(biome: BiomeConfig): THREE.Material {
         color: 0xffd700, metalness: 1.0, roughness: 0.1, 
         emissive: 0xffaa00, emissiveIntensity: 1.0 
       });
+      material.userData.isBiomicMaterial = true;
       material.defines = { 'USE_UV': '' };
       material.onBeforeCompile = (shader) => {
         shader.uniforms.time = timeUniform;
-        shader.vertexShader = `
-          #ifndef USE_UV
-            varying vec2 vUv;
-          #endif
-          uniform float time;
-          ${shader.vertexShader}
-        `.replace(
-          '#include <begin_vertex>',
-          `
-          #include <begin_vertex>
-          #ifndef USE_UV
-            vUv = uv;
-          #endif
-          transformed.y += sin(transformed.x * 2.5 + time * 3.0) * 0.05;
-          transformed.x += cos(transformed.y * 2.0 + time * 2.0) * 0.04;
-          transformed.z += sin(transformed.x * 1.5 + transformed.y * 1.5 + time * 4.0) * 0.02;
-          `
-        );
-        shader.fragmentShader = `
-          #ifndef USE_UV
-            varying vec2 vUv;
-          #endif
-          uniform float time;
-          ${shader.fragmentShader}
-        `.replace(
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <common>',
+          `#include <common>
+          uniform float time;`
+        ).replace(
           '#include <emissivemap_fragment>',
           `
           #include <emissivemap_fragment>
           vec2 uv = vUv;
-          float t = time * 0.6;
-          
-          // Refined Flowing liquid texture
-          vec3 flowUv = vec3(uv * 3.0, time * 0.4);
-          
-          // Layered sine waves for complex flow
-          float flow = sin(uv.x * 10.0 + t + sin(uv.y * 12.0 + t * 0.8));
-          flow += sin(uv.y * 8.0 - t * 1.2 + cos(uv.x * 15.0 + t * 0.5)) * 0.5;
-          flow += sin((uv.x + uv.y) * 20.0 + t * 2.0) * 0.2;
-          
-          float liquid = pow(abs(flow) * 0.6, 2.5);
-          
-          // Dynamic shimmer/sparkle layer
-          float sparkle = pow(max(0.0, sin(uv.x * 50.0 + t * 4.0) * sin(uv.y * 50.0 - t * 3.0)), 20.0);
-          sparkle += pow(max(0.0, sin(uv.x * 35.0 - t * 2.0) * cos(uv.y * 45.0 + t * 5.0)), 15.0) * 0.7;
-          
-          // Surface caustic-like reflections
-          float reflections = pow(max(0.0, sin(uv.x * 15.0 + uv.y * 15.0 + t * 3.0)), 12.0) * 2.0;
-          
-          totalEmissiveRadiance += emissive * (liquid * 2.5 + sparkle * 6.0 + reflections);
-          totalEmissiveRadiance *= (0.7 + 0.3 * sin(t * 0.5 + uv.y * 3.0)); // Slow surface pulse
+          float flow = sin(uv.x * 10.0 + time * 2.0) * sin(uv.y * 10.0 + time * 1.5);
+          totalEmissiveRadiance += emissive * (flow * 0.5 + 0.5) * 5.0;
           `
         );
         material.userData.shader = shader;
       };
       break;
 
-    case 'autumn':
-      material = new THREE.MeshStandardMaterial({ 
-        color: 0x8a5c3d, 
-        roughness: 0.5, 
-        metalness: 0.3,
-        emissive: 0xffaa44,
-        emissiveIntensity: 0.4
-      });
-      break;
-    case 'meadow':
-      material = new THREE.MeshStandardMaterial({ 
-        color: 0x4d8a4d, 
-        roughness: 0.6, 
-        metalness: 0.2,
-        emissive: 0x44ff44,
-        emissiveIntensity: 0.3
-      });
-      break;
-    case 'fungal':
-      material = new THREE.MeshStandardMaterial({ 
-        color: 0x6633aa, 
-        emissive: 0xaa00ff, 
-        emissiveIntensity: 1.5, 
-        metalness: 0.4, 
-        roughness: 0.3 
-      });
-      break;
-    case 'rainforest':
-      material = new THREE.MeshStandardMaterial({ 
-        color: 0x0a6a0a, 
-        roughness: 0.2, 
-        metalness: 0.5,
-        emissive: 0x00ff00,
-        emissiveIntensity: 0.5
-      });
-      break;
-    case 'desert':
-      material = new THREE.MeshStandardMaterial({ 
-        color: 0xf5e1c0, 
-        roughness: 0.6, 
-        metalness: 0.3,
-        emissive: 0xffd700,
-        emissiveIntensity: 0.4
-      });
-      break;
-    case 'tundra':
-      material = new THREE.MeshStandardMaterial({ 
-        color: 0xffffff, 
-        metalness: 1.0, 
-        roughness: 0.02, 
-        transparent: true, 
-        opacity: 0.9,
-        emissive: 0x00ffff,
-        emissiveIntensity: 0.6
-      });
-      break;
     default:
       material = new THREE.MeshStandardMaterial({ color: 0xffffff });
+      material.userData.isBiomicMaterial = true;
   }
+  
+  if (material instanceof THREE.MeshStandardMaterial) {
+    material.userData.isBiomicMaterial = true;
+  }
+  
   return material;
 }
